@@ -7,6 +7,7 @@ import uvicorn
 from datetime import datetime
 import requests
 import openai
+from rag_search_module import search_relevant_docs, build_prompt
 
 app = FastAPI()
 
@@ -88,6 +89,34 @@ async def chatbot_response(message: str) -> str:
     
     return reply  
 
+
+# @rag 처리 함수
+async def rag_response(query):
+    headers = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json"
+    }
+
+    docs = search_relevant_docs(query)
+    prompt = build_prompt(docs, query)
+    
+    body = {
+        "model": "gpt-3.5-turbo",
+        "messages": prompt
+    }
+    
+    res = requests.post("https://api.openai.com/v1/chat/completions", headers=headers, json=body)
+    reply = res.json()["choices"][0]["message"]["content"]
+    # chatbot 메시지도 DB 저장
+    messages_collection.insert_one({
+      "nickname": "rag",
+      "role": "assistant",
+      "message": reply,
+      "timestamp": datetime.utcnow()
+    })
+
+    return reply
+
 @app.websocket("/ws/{nickname}")
 async def websocket_endpoint(websocket: WebSocket, nickname: str):
     await manager.connect(websocket, nickname)
@@ -107,12 +136,16 @@ async def websocket_endpoint(websocket: WebSocket, nickname: str):
             await manager.broadcast(full_message)
 
             if data.strip().startswith("@chatbot"):
-                # '@chatbot ' 이후 실제 명령만 추출
                 bot_query = data.strip()[len("@chatbot"):].strip()
                 bot_reply = await chatbot_response(bot_query)
                 bot_message = f"chatbot [{timestamp}] : {bot_reply}"
-                
                 await manager.broadcast(bot_message)
+            
+            if data.strip().startswith("@rag"):
+                query = data.strip()[len("@rag"):].strip()
+                answer = await rag_response(query)
+                rag_message = f"chatbot [{timestamp}] : {answer}"
+                await manager.broadcast(rag_message)
 
     except WebSocketDisconnect:
         manager.disconnect(nickname)
