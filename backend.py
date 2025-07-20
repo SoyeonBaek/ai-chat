@@ -1,49 +1,72 @@
+# backend.py
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List
-import json
+from pymongo import MongoClient
+from typing import List, Dict
+import uvicorn
+from datetime import datetime
 
 app = FastAPI()
 
-# CORS 설정 (개발 중 React 등에서 접근 허용)
+# CORS 허용 (React 개발 서버 주소 넣기)
+origins = [
+    "http://localhost:3000",
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=origins,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 연결된 클라이언트 목록
+client = MongoClient("mongodb://localhost:27017")
+db = client.chat_db
+messages_collection = db.messages
+
 class ConnectionManager:
     def __init__(self):
-        self.active_connections: List[WebSocket] = []
+        self.active_connections: Dict[str, WebSocket] = {}
 
-    async def connect(self, websocket: WebSocket):
+    async def connect(self, websocket: WebSocket, nickname: str):
         await websocket.accept()
-        self.active_connections.append(websocket)
+        self.active_connections[nickname] = websocket
 
-    def disconnect(self, websocket: WebSocket):
-        self.active_connections.remove(websocket)
+    def disconnect(self, nickname: str):
+        if nickname in self.active_connections:
+            del self.active_connections[nickname]
 
-    async def broadcast(self, message: dict):
-        text = json.dumps(message)
-        for connection in self.active_connections:
-            await connection.send_text(text)
+    async def send_personal_message(self, message: str, nickname: str):
+        websocket = self.active_connections.get(nickname)
+        if websocket:
+            await websocket.send_text(message)
+
+    async def broadcast(self, message: str):
+        for connection in self.active_connections.values():
+            await connection.send_text(message)
 
 manager = ConnectionManager()
 
 @app.websocket("/ws/{nickname}")
 async def websocket_endpoint(websocket: WebSocket, nickname: str):
-    await manager.connect(websocket)
+    await manager.connect(websocket, nickname)
     try:
         while True:
-            text_data = await websocket.receive_text()
-            message = {
-                "sender": nickname,
-                "message": text_data,
-                "timestamp": None  # 원하면 datetime.utcnow().isoformat() 등 추가 가능
-            }
-            await manager.broadcast(message)
+            data = await websocket.receive_text()
+            timestamp = datetime.utcnow()  # UTC 기준 현재 시간
+            full_message = f'{nickname} [{timestamp.strftime("%Y-%m-%d %H:%M:%S")}] : {data}'
+            # DB 저장 (시간도 같이)
+            messages_collection.insert_one({
+                "nickname": nickname,
+                "message": data,
+                "timestamp": timestamp
+            })
+            # 브로드캐스트
+            await manager.broadcast(full_message)
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        manager.disconnect(nickname)
+        await manager.broadcast(f"{nickname}님이 나갔습니다.")
+
+if __name__ == "__main__":
+    uvicorn.run("backend:app", host="0.0.0.0", port=8000, reload=True)
 
