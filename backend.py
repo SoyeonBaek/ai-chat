@@ -5,6 +5,8 @@ from pymongo import MongoClient
 from typing import List, Dict
 import uvicorn
 from datetime import datetime
+import requests
+import openai
 
 app = FastAPI()
 
@@ -47,6 +49,45 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 
+with open('api-key', 'r') as f:
+    API_KEY = f.read().strip()
+
+# @chatbot 처리 함수
+async def chatbot_response(message: str) -> str:
+
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+      "Authorization": f"Bearer {API_KEY}",
+      "Content-Type": "application/json",
+    }
+      
+    # 이전 대화 불러오기(이전 30개)
+    past_messages = list(messages_collection.find().sort("timestamp", -1).limit(30))[::-1]
+
+    # GPT에게 보낼 messages 생성
+    chat_messages = [{"role": "system", "content": "You are a helpful assistant."}]
+    for msg in past_messages:
+        chat_messages.append({"role": msg["role"], "content": msg["message"]})
+
+    data = {
+      "model": "gpt-4",
+      "messages":chat_messages
+    }
+
+    timestamp = datetime.utcnow()  # UTC 기준 현재 시간
+    response = requests.post(url, headers=headers, json=data)
+    reply = response.json()["choices"][0]["message"]["content"]
+    
+    # chatbot 메시지도 DB 저장
+    messages_collection.insert_one({
+      "nickname": "chatbot",
+      "role": "assistant",
+      "message": reply,
+      "timestamp": timestamp
+    })
+    
+    return reply  
+
 @app.websocket("/ws/{nickname}")
 async def websocket_endpoint(websocket: WebSocket, nickname: str):
     await manager.connect(websocket, nickname)
@@ -58,11 +99,21 @@ async def websocket_endpoint(websocket: WebSocket, nickname: str):
             # DB 저장 (시간도 같이)
             messages_collection.insert_one({
                 "nickname": nickname,
+                "role": "user",
                 "message": data,
                 "timestamp": timestamp
             })
             # 브로드캐스트
             await manager.broadcast(full_message)
+
+            if data.strip().startswith("@chatbot"):
+                # '@chatbot ' 이후 실제 명령만 추출
+                bot_query = data.strip()[len("@chatbot"):].strip()
+                bot_reply = await chatbot_response(bot_query)
+                bot_message = f"chatbot [{timestamp}] : {bot_reply}"
+                
+                await manager.broadcast(bot_message)
+
     except WebSocketDisconnect:
         manager.disconnect(nickname)
         await manager.broadcast(f"{nickname}님이 나갔습니다.")
