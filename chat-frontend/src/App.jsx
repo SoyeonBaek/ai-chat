@@ -76,18 +76,27 @@ function App() {
       </div>
     );
   } 
+  
+  const renderMessage = (msg, i) => {
+    if (msg.startsWith("[IMAGE]:")) {
+      const filename = msg.replace("[IMAGE]:", "").trim();
+      const url = `http://localhost:8000/images/${filename}`;
+      return (
+        <div key={i} className="message">
+          <img src={url} alt="Generated" style={{ maxWidth: "300px", borderRadius: "8px" }} />
+        </div>
+      );
+    }
+
+    return <div key={i} className="message">{msg}</div>;
+  };
 
   // 채팅 UI
   return (
     <div className="chat-container">
       <h2>채팅방 (닉네임: {nickname})</h2>
       <div className="chat-messages">
-        {chatLog.map((msg, i) => (
-          <div key={i} className="message">
-            {/* 메시지가 문자열이라서, 닉네임 부분만 스타일링 하려면 backend 형식 변경 필요 */}
-            {msg}
-          </div>
-        ))}
+        {chatLog.map((msg, i) => renderMessage(msg, i))}
         <div ref={messagesEndRef} />
       </div>
       <div className="input-area">
